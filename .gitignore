@@ -37,6 +37,8 @@ Thumbs.db
 *.swo
 *~
 
+*.xlsx
+
 # Environment variables
 .env
 .env.local
