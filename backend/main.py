@@ -35,6 +35,11 @@ def sanitize_float(value):
     if isinstance(value, float):
         if math.isnan(value) or math.isinf(value):
             return 0.0
+    elif isinstance(value, (int, str, bool, type(None))):
+        return value
+    else:
+        # Para outros tipos, tenta converter para string
+        return str(value)
     return value
 
 def sanitize_dict(data):
@@ -516,6 +521,87 @@ def atualizar_conta(
     if not conta:
         raise HTTPException(status_code=404, detail="Conta não encontrada")
     
+    # Verificar se está sendo marcada como parcelada
+    if conta_update.eh_parcelado and not conta.eh_parcelado:
+        # Está sendo transformada em conta parcelada
+        if not conta_update.total_parcelas or not conta_update.parcelas_restantes:
+            raise HTTPException(
+                status_code=400, 
+                detail="Para tornar uma conta parcelada, é necessário informar total_parcelas e parcelas_restantes"
+            )
+        
+        # Gerar ID único para agrupar as parcelas
+        grupo_id = str(uuid.uuid4())
+        
+        # Calcular parcela atual
+        parcela_atual = conta_update.total_parcelas - conta_update.parcelas_restantes + 1
+        
+        # Valor total da compra (se não informado, usar valor * total_parcelas)
+        valor_total_compra = conta_update.valor_total or (conta.valor * conta_update.total_parcelas)
+        
+        # Atualizar a conta atual para ser a parcela atual
+        conta.eh_parcelado = True
+        conta.numero_parcela = parcela_atual
+        conta.total_parcelas = conta_update.total_parcelas
+        conta.valor_total = valor_total_compra
+        conta.grupo_parcelamento = grupo_id
+        conta.descricao = f"{conta.descricao} - Parcela {parcela_atual}/{conta_update.total_parcelas}"
+        
+        # Criar as outras parcelas (anteriores e futuras)
+        contas_criadas = []
+        for numero_parcela in range(1, conta_update.total_parcelas + 1):
+            if numero_parcela == parcela_atual:
+                continue  # Pular a parcela atual que já existe
+            
+            # Calcular quantos meses antes/depois da data atual esta parcela deve vencer
+            meses_diferenca = numero_parcela - parcela_atual
+            data_vencimento = conta.data_vencimento + relativedelta(months=meses_diferenca)
+            
+            # Determinar status da parcela
+            if numero_parcela < parcela_atual:
+                # Parcelas anteriores são marcadas como pagas
+                status_parcela = "pago"
+                data_pagamento = data_vencimento  # Assume que foi paga na data de vencimento
+            else:
+                # Parcelas futuras são pendentes
+                status_parcela = "pendente"
+                data_pagamento = None
+            
+            # Criar descrição com número da parcela
+            descricao_original = conta.descricao.split(" - Parcela")[0]  # Remove sufixo se já existir
+            descricao_parcela = f"{descricao_original} - Parcela {numero_parcela}/{conta_update.total_parcelas}"
+            
+            nova_conta = Conta(
+                descricao=descricao_parcela,
+                valor=conta.valor,
+                data_vencimento=data_vencimento,
+                data_pagamento=data_pagamento,
+                categoria_id=conta.categoria_id,
+                forma_pagamento=conta.forma_pagamento,
+                observacoes=conta.observacoes,
+                eh_parcelado=True,
+                numero_parcela=numero_parcela,
+                total_parcelas=conta_update.total_parcelas,
+                valor_total=valor_total_compra,
+                grupo_parcelamento=grupo_id,
+                status=status_parcela
+            )
+            
+            db.add(nova_conta)
+            contas_criadas.append(nova_conta)
+        
+        conta.updated_at = datetime.utcnow()
+        db.commit()
+        db.refresh(conta)
+        
+        return {
+            "conta_atualizada": conta,
+            "parcelas_criadas": len(contas_criadas),
+            "total_parcelas": conta_update.total_parcelas,
+            "grupo_parcelamento": grupo_id
+        }
+    
+    # Atualização normal (não parcelamento)
     update_data = conta_update.dict(exclude_unset=True)
     for field, value in update_data.items():
         setattr(conta, field, value)
@@ -809,15 +895,18 @@ async def importar_excel(
         contents = await file.read()
         df = pd.read_excel(io.BytesIO(contents))
         
-        # Verificar se as colunas necessárias existem
-        colunas_necessarias = ['Descricao', 'Data de Pagamento', 'Categoria', 'Valor']
-        colunas_faltando = [col for col in colunas_necessarias if col not in df.columns]
-        
-        if colunas_faltando:
+        # Verificar se tem pelo menos 4 colunas
+        if len(df.columns) < 4:
             raise HTTPException(
                 status_code=400,
-                detail=f"Colunas faltando no Excel: {', '.join(colunas_faltando)}"
+                detail=f"O arquivo deve ter pelo menos 4 colunas. Encontradas: {len(df.columns)} colunas"
             )
+        
+        # Renomear colunas para padrão esperado (usar posição, não nome)
+        colunas_padrao = ['Descricao', 'Data de Pagamento', 'Categoria', 'Valor']
+        df.columns = colunas_padrao[:len(df.columns)]
+        
+        print(f"Arquivo tem {len(df.columns)} colunas. Usando as 4 primeiras como: {colunas_padrao[:4]}")  # Debug
         
         contas_criadas = []
         contas_com_erro = []
@@ -825,26 +914,63 @@ async def importar_excel(
         
         for index, row in df.iterrows():
             try:
+                print(f"Processando linha {index + 2}: {row.to_dict()}")  # Debug
+                
                 # Verificar se a categoria existe, se não, criar
                 categoria_nome = str(row['Categoria']).strip()
+                if not categoria_nome or categoria_nome.lower() in ['nan', 'none', '']:
+                    raise ValueError("Categoria não pode estar vazia")
+                    
                 categoria = db.query(Categoria).filter(Categoria.nome == categoria_nome).first()
                 
                 if not categoria:
                     # Criar nova categoria
                     categoria = Categoria(
-                        nome=categoria_nome,
-                        descricao=f"Categoria criada automaticamente via importação"
+                        nome=categoria_nome
                     )
                     db.add(categoria)
                     db.flush()  # Para obter o ID
                     categorias_criadas.append(categoria_nome)
+                    print(f"Categoria criada: {categoria_nome}")  # Debug
                 
                 # Converter data
-                data_pagamento = pd.to_datetime(row['Data de Pagamento']).date()
+                try:
+                    data_raw = row['Data de Pagamento']
+                    print(f"Data bruta: {data_raw} (tipo: {type(data_raw)})")  # Debug
+                    
+                    # Se a data for um número (dia do mês), assumir mês/ano atual (agosto/2025)
+                    if isinstance(data_raw, (int, float)) and not pd.isna(data_raw):
+                        dia = int(data_raw)
+                        if dia < 1 or dia > 31:
+                            raise ValueError(f"Dia inválido: {dia}")
+                        # Usar mês atual (agosto) e ano atual (2025)
+                        from datetime import datetime
+                        data_pagamento = datetime(2025, 8, dia).date()
+                    else:
+                        # Tentar diferentes formatos de data
+                        data_str = str(data_raw)
+                        data_pagamento = None
+                        formatos = ['%d/%m/%Y', '%Y-%m-%d', '%d-%m-%Y', '%d/%m/%y']
+                        
+                        for formato in formatos:
+                            try:
+                                data_pagamento = datetime.strptime(data_str, formato).date()
+                                break
+                            except ValueError:
+                                continue
+                        
+                        if data_pagamento is None:
+                            raise ValueError(f"Formato de data não reconhecido: {data_str}")
+                    
+                    print(f"Data convertida: {data_pagamento}")  # Debug
+                except Exception as e:
+                    raise ValueError(f"Data inválida: {row['Data de Pagamento']} - {str(e)}")
                 
                 # Converter valor com validação
                 try:
                     valor_raw = row['Valor']
+                    print(f"Valor bruto: {valor_raw} (tipo: {type(valor_raw)})")  # Debug
+                    
                     # Verificar se é NaN ou vazio
                     if pd.isna(valor_raw) or valor_raw == '':
                         raise ValueError("Valor não pode estar vazio")
@@ -858,13 +984,17 @@ async def importar_excel(
                     if valor < 0:
                         raise ValueError(f"Valor deve ser positivo: {valor}")
                         
+                    print(f"Valor convertido: {valor}")  # Debug
+                        
                 except (ValueError, TypeError) as e:
                     raise ValueError(f"Valor inválido na linha {index + 2}: {row['Valor']} - {str(e)}")
                 
                 # Validar descrição
                 descricao = str(row['Descricao']).strip()
-                if not descricao:
+                if not descricao or descricao.lower() in ['nan', 'none', '']:
                     raise ValueError(f"Descrição não pode estar vazia na linha {index + 2}")
+                
+                print(f"Descrição: {descricao}")  # Debug
                 
                 # Criar a conta
                 nova_conta = Conta(
@@ -874,7 +1004,7 @@ async def importar_excel(
                     data_pagamento=data_pagamento,
                     categoria_id=categoria.id,
                     forma_pagamento="Não especificado",
-                    pago=True,  # Como tem data de pagamento, assumimos que está paga
+                    status="pago",  # Como tem data de pagamento, assumimos que está paga
                     observacoes=f"Importada via Excel em {datetime.now().strftime('%d/%m/%Y %H:%M')}"
                 )
                 
@@ -885,14 +1015,22 @@ async def importar_excel(
                     "categoria": categoria_nome
                 })
                 
+                print(f"Conta criada com sucesso: {descricao}")  # Debug
+                
             except Exception as e:
+                error_msg = str(e)
+                print(f"ERRO na linha {index + 2}: {error_msg}")  # Debug
+                
                 # Sanitizar dados da linha que causou erro
-                row_dict = row.to_dict()
-                row_dict_sanitized = sanitize_dict(row_dict)
+                try:
+                    row_dict = row.to_dict()
+                    row_dict_sanitized = sanitize_dict(row_dict)
+                except:
+                    row_dict_sanitized = {"erro": "Não foi possível processar dados da linha"}
                 
                 contas_com_erro.append({
                     "linha": index + 2,  # +2 porque Excel começa na linha 1 e temos cabeçalho
-                    "erro": str(e),
+                    "erro": error_msg,
                     "dados": row_dict_sanitized
                 })
         
@@ -900,18 +1038,30 @@ async def importar_excel(
         db.commit()
         
         # Sanitizar resposta final
-        response_data = {
-            "message": f"Importação concluída com sucesso!",
-            "contas_criadas": len(contas_criadas),
-            "contas_com_erro": len(contas_com_erro),
-            "categorias_criadas": categorias_criadas,
-            "detalhes": {
-                "contas_criadas": contas_criadas,
-                "contas_com_erro": contas_com_erro
+        try:
+            response_data = {
+                "message": f"Importação concluída com sucesso!",
+                "contas_criadas": len(contas_criadas),
+                "contas_com_erro": len(contas_com_erro),
+                "categorias_criadas": categorias_criadas,
+                "detalhes": {
+                    "contas_criadas": contas_criadas,
+                    "contas_com_erro": contas_com_erro
+                }
             }
-        }
-        
-        return sanitize_dict(response_data)
+            
+            sanitized_response = sanitize_dict(response_data)
+            return sanitized_response
+            
+        except Exception as json_error:
+            # Se houver erro na serialização, retornar resposta mais simples
+            return {
+                "message": f"Importação concluída com sucesso!",
+                "contas_criadas": len(contas_criadas),
+                "contas_com_erro": len(contas_com_erro),
+                "categorias_criadas": len(categorias_criadas),
+                "erro_detalhes": str(json_error)
+            }
         
     except Exception as e:
         db.rollback()
