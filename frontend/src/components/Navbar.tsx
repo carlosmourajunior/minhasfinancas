@@ -22,6 +22,7 @@ import {
   AccountCircle,
   Dashboard as DashboardIcon,
   Receipt as ReceiptIcon,
+  Category as CategoryIcon,
   Assessment as AssessmentIcon,
   Menu as MenuIcon,
   Logout as LogoutIcon,
@@ -64,6 +65,7 @@ const SidebarLayout: React.FC<SidebarLayoutProps> = ({ children }) => {
   const navigationItems = [
     { label: 'Dashboard', path: '/', icon: <DashboardIcon /> },
     { label: 'Contas', path: '/contas', icon: <ReceiptIcon /> },
+    { label: 'Categorias', path: '/categorias', icon: <CategoryIcon /> },
     { label: 'Relatórios', path: '/relatorios', icon: <AssessmentIcon /> },
   ];
 

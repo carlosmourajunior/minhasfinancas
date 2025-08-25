@@ -14,6 +14,8 @@ import {
   MonetizationOn,
   Warning,
 } from '@mui/icons-material';
+import { DatePicker } from '@mui/x-date-pickers/DatePicker';
+import dayjs from 'dayjs';
 import axios from 'axios';
 
 interface ResumoData {
@@ -23,14 +25,31 @@ interface ResumoData {
   valor_total_pendente: number;
 }
 
+interface DadosGrafico {
+  mes: number;
+  ano: number;
+  mes_nome: string;
+  valor_previsto: number;
+  valor_pago: number;
+  eh_mes_atual: boolean;
+}
+
 const Dashboard: React.FC = () => {
   const [resumo, setResumo] = useState<ResumoData | null>(null);
+  const [dadosGrafico, setDadosGrafico] = useState<DadosGrafico[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadingGrafico, setLoadingGrafico] = useState(true);
+  const [mesAno, setMesAno] = useState(dayjs()); // Mês/ano atual por padrão
 
   useEffect(() => {
     const fetchResumo = async () => {
       try {
-        const response = await axios.get('/relatorios/resumo');
+        const params = {
+          mes: mesAno.month() + 1, // dayjs months são 0-indexed
+          ano: mesAno.year()
+        };
+        
+        const response = await axios.get('/relatorios/resumo', { params });
         setResumo(response.data);
       } catch (error) {
         console.error('Erro ao carregar resumo:', error);
@@ -39,8 +58,20 @@ const Dashboard: React.FC = () => {
       }
     };
 
+    const fetchDadosGrafico = async () => {
+      try {
+        const response = await axios.get('/relatorios/grafico-evolucao');
+        setDadosGrafico(response.data);
+      } catch (error) {
+        console.error('Erro ao carregar dados do gráfico:', error);
+      } finally {
+        setLoadingGrafico(false);
+      }
+    };
+
     fetchResumo();
-  }, []);
+    fetchDadosGrafico();
+  }, [mesAno]); // Recarregar quando o filtro de mês/ano mudar
 
   if (loading) {
     return (
@@ -94,6 +125,94 @@ const Dashboard: React.FC = () => {
       <Typography variant="h4" gutterBottom>
         Dashboard
       </Typography>
+      
+      {/* Filtro de Mês/Ano */}
+      <Box display="flex" alignItems="center" mb={3} gap={2}>
+        <Typography variant="h6">Período:</Typography>
+        <DatePicker
+          label="Mês/Ano"
+          value={mesAno}
+          onChange={(newValue) => setMesAno(newValue || dayjs())}
+          views={['year', 'month']}
+          format="MM/YYYY"
+          slotProps={{
+            textField: {
+              size: 'small',
+              sx: { minWidth: 150 }
+            }
+          }}
+        />
+      </Box>
+
+      {/* Gráfico de Evolução dos Gastos */}
+      <Paper sx={{ p: 3, mb: 3 }}>
+        <Typography variant="h6" gutterBottom>
+          Evolução dos Gastos (2 meses anteriores + 9 posteriores)
+        </Typography>
+        {loadingGrafico ? (
+          <Box display="flex" justifyContent="center" alignItems="center" minHeight="300px">
+            <CircularProgress />
+          </Box>
+        ) : (
+          <Box sx={{ height: 300, display: 'flex', alignItems: 'end', gap: 1, mt: 2 }}>
+            {dadosGrafico.map((item, index) => {
+              const maxValue = Math.max(...dadosGrafico.map(d => Math.max(d.valor_previsto, d.valor_pago)));
+              const heightPrevisto = (item.valor_previsto / maxValue) * 250;
+              const heightPago = (item.valor_pago / maxValue) * 250;
+              
+              return (
+                <Box key={index} sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', flex: 1 }}>
+                  <Box sx={{ display: 'flex', alignItems: 'end', gap: '2px', mb: 1, height: '250px' }}>
+                    <Box
+                      sx={{
+                        width: '15px',
+                        height: `${heightPrevisto}px`,
+                        backgroundColor: item.eh_mes_atual ? '#1976d2' : '#90caf9',
+                        borderRadius: '2px 2px 0 0',
+                        position: 'relative',
+                      }}
+                      title={`Previsto: ${formatCurrency(item.valor_previsto)}`}
+                    />
+                    <Box
+                      sx={{
+                        width: '15px',
+                        height: `${heightPago}px`,
+                        backgroundColor: item.eh_mes_atual ? '#388e3c' : '#81c784',
+                        borderRadius: '2px 2px 0 0',
+                        position: 'relative',
+                      }}
+                      title={`Pago: ${formatCurrency(item.valor_pago)}`}
+                    />
+                  </Box>
+                  <Typography variant="caption" sx={{ fontSize: '10px', textAlign: 'center' }}>
+                    {item.mes_nome}
+                  </Typography>
+                </Box>
+              );
+            })}
+          </Box>
+        )}
+        
+        {/* Legenda */}
+        <Box display="flex" justifyContent="center" gap={3} mt={2}>
+          <Box display="flex" alignItems="center" gap={1}>
+            <Box sx={{ width: 15, height: 15, backgroundColor: '#90caf9', borderRadius: '2px' }} />
+            <Typography variant="caption">Previsto</Typography>
+          </Box>
+          <Box display="flex" alignItems="center" gap={1}>
+            <Box sx={{ width: 15, height: 15, backgroundColor: '#81c784', borderRadius: '2px' }} />
+            <Typography variant="caption">Pago</Typography>
+          </Box>
+          <Box display="flex" alignItems="center" gap={1}>
+            <Box sx={{ width: 15, height: 15, backgroundColor: '#1976d2', borderRadius: '2px' }} />
+            <Typography variant="caption">Mês Atual (Previsto)</Typography>
+          </Box>
+          <Box display="flex" alignItems="center" gap={1}>
+            <Box sx={{ width: 15, height: 15, backgroundColor: '#388e3c', borderRadius: '2px' }} />
+            <Typography variant="caption">Mês Atual (Pago)</Typography>
+          </Box>
+        </Box>
+      </Paper>
       
       <Grid container spacing={3}>
         {cardData.map((card, index) => (
