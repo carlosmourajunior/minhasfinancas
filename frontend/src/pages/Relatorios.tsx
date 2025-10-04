@@ -7,6 +7,9 @@ import {
   Box,
   Paper,
   CircularProgress,
+  Button,
+  FormControlLabel,
+  Checkbox,
 } from '@mui/material';
 import {
   BarChart,
@@ -21,6 +24,8 @@ import {
   Cell,
   ResponsiveContainer,
 } from 'recharts';
+import { DatePicker } from '@mui/x-date-pickers/DatePicker';
+import dayjs from 'dayjs';
 import axios from 'axios';
 
 interface CategoriaData {
@@ -32,11 +37,21 @@ interface CategoriaData {
 const Relatorios: React.FC = () => {
   const [categorias, setCategorias] = useState<Record<string, CategoriaData>>({});
   const [loading, setLoading] = useState(true);
+  const [mesAno, setMesAno] = useState(dayjs()); // Mês/ano atual por padrão
+  const [mostrarTodos, setMostrarTodos] = useState(false); // Checkbox para mostrar todos os dados
 
   useEffect(() => {
     const fetchRelatorios = async () => {
       try {
-        const response = await axios.get('/relatorios/categorias');
+        const params: any = {};
+        
+        // Se não for "mostrar todos", incluir filtros de mês/ano
+        if (!mostrarTodos) {
+          params.mes = mesAno.month() + 1; // dayjs months são 0-indexed
+          params.ano = mesAno.year();
+        }
+        
+        const response = await axios.get('/relatorios/categorias', { params });
         setCategorias(response.data);
       } catch (error) {
         console.error('Erro ao carregar relatórios:', error);
@@ -46,7 +61,7 @@ const Relatorios: React.FC = () => {
     };
 
     fetchRelatorios();
-  }, []);
+  }, [mesAno, mostrarTodos]); // Recarregar quando mudar mês/ano ou checkbox
 
   if (loading) {
     return (
@@ -94,6 +109,47 @@ const Relatorios: React.FC = () => {
       <Typography variant="h4" gutterBottom>
         Relatórios
       </Typography>
+
+      {/* Controles de Filtro */}
+      <Paper sx={{ p: 3, mb: 3, borderRadius: 2 }}>
+        <Box display="flex" alignItems="center" gap={3} flexWrap="wrap">
+          <Typography variant="h6">Filtros:</Typography>
+          
+          <FormControlLabel
+            control={
+              <Checkbox
+                checked={mostrarTodos}
+                onChange={(e) => setMostrarTodos(e.target.checked)}
+                color="primary"
+              />
+            }
+            label="Mostrar todos os dados (sem filtro de período)"
+          />
+          
+          {!mostrarTodos && (
+            <DatePicker
+              label="Período"
+              value={mesAno}
+              onChange={(newValue) => setMesAno(newValue || dayjs())}
+              views={['year', 'month']}
+              format="MM/YYYY"
+              slotProps={{
+                textField: {
+                  size: 'small',
+                  sx: { minWidth: 150 }
+                }
+              }}
+            />
+          )}
+          
+          <Typography variant="body2" color="text.secondary" sx={{ ml: 'auto' }}>
+            {mostrarTodos 
+              ? 'Exibindo dados de todo o período' 
+              : `Período: ${mesAno.format('MM/YYYY')}`
+            }
+          </Typography>
+        </Box>
+      </Paper>
 
       <Grid container spacing={3}>
         {/* Gráfico de barras */}

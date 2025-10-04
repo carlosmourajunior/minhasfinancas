@@ -7,6 +7,7 @@ import Contas from './pages/Contas';
 import Categorias from './pages/Categorias';
 import Relatorios from './pages/Relatorios';
 import { AuthProvider, useAuth } from './services/AuthContext';
+import Cartoes from './pages/Cartoes';
 
 function AppContent() {
   const { token } = useAuth();
@@ -22,6 +23,7 @@ function AppContent() {
         <Route path="/contas" element={<Contas />} />
         <Route path="/categorias" element={<Categorias />} />
         <Route path="/relatorios" element={<Relatorios />} />
+        <Route path="/cartoes" element={<Cartoes />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </SidebarLayout>

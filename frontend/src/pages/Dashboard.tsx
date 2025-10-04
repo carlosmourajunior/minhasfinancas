@@ -7,6 +7,14 @@ import {
   Box,
   Paper,
   CircularProgress,
+  FormControlLabel,
+  Checkbox,
+  Button,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
+  TextField,
 } from '@mui/material';
 import {
   TrendingUp,
@@ -34,20 +42,42 @@ interface DadosGrafico {
   eh_mes_atual: boolean;
 }
 
+interface FaturaPendente {
+  id: number;
+  cartao_id: number;
+  cartao_nome?: string;
+  periodo_inicio: string;
+  periodo_fim: string;
+  data_fechamento: string;
+  data_vencimento: string;
+  valor_previsto?: number;
+  valor_real?: number;
+  status: string;
+}
+
 const Dashboard: React.FC = () => {
   const [resumo, setResumo] = useState<ResumoData | null>(null);
   const [dadosGrafico, setDadosGrafico] = useState<DadosGrafico[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadingGrafico, setLoadingGrafico] = useState(true);
   const [mesAno, setMesAno] = useState(dayjs()); // Mês/ano atual por padrão
+  const [mostrarTodos, setMostrarTodos] = useState(false); // Checkbox para mostrar todos os dados
+  const [faturasPendentes, setFaturasPendentes] = useState<FaturaPendente[]>([]);
+  const [contasVencemHoje, setContasVencemHoje] = useState<any[]>([]);
+  const [confirmDialogOpen, setConfirmDialogOpen] = useState(false);
+  const [faturaParaConfirmar, setFaturaParaConfirmar] = useState<FaturaPendente | null>(null);
+  const [valorFatura, setValorFatura] = useState('');
 
   useEffect(() => {
     const fetchResumo = async () => {
       try {
-        const params = {
-          mes: mesAno.month() + 1, // dayjs months são 0-indexed
-          ano: mesAno.year()
-        };
+        const params: any = {};
+        
+        // Se não for "mostrar todos", incluir filtros de mês/ano
+        if (!mostrarTodos) {
+          params.mes = mesAno.month() + 1; // dayjs months são 0-indexed
+          params.ano = mesAno.year();
+        }
         
         const response = await axios.get('/relatorios/resumo', { params });
         setResumo(response.data);
@@ -69,9 +99,29 @@ const Dashboard: React.FC = () => {
       }
     };
 
+    const fetchFaturasPendentes = async () => {
+      try {
+        const res = await axios.get('/cartoes/faturas/pendentes');
+        setFaturasPendentes(res.data || []);
+      } catch (error) {
+        console.error('Erro ao carregar faturas pendentes:', error);
+      }
+    };
+
+    const fetchContasVencemHoje = async () => {
+      try {
+        const res = await axios.get('/contas/vencem-hoje');
+        setContasVencemHoje(res.data || []);
+      } catch (error) {
+        console.error('Erro ao carregar contas que vencem hoje:', error);
+      }
+    };
+
     fetchResumo();
     fetchDadosGrafico();
-  }, [mesAno]); // Recarregar quando o filtro de mês/ano mudar
+    fetchFaturasPendentes();
+    fetchContasVencemHoje();
+  }, [mesAno, mostrarTodos]); // Recarregar quando o filtro de mês/ano mudar ou checkbox
 
   if (loading) {
     return (
@@ -86,6 +136,56 @@ const Dashboard: React.FC = () => {
       style: 'currency',
       currency: 'BRL',
     }).format(value);
+  };
+
+  const formatDateBr = (input: string) => {
+    if (!input) return '-';
+    // Se vier no formato ISO (YYYY-MM-DD ou ISO completo), usar dayjs
+    if (input.includes('-')) {
+      const d = dayjs(input);
+      return d.isValid() ? d.format('DD/MM/YYYY') : input;
+    }
+    // Se vier com barras, assumir que já está em DD/MM/YYYY e retornar como está
+    if (input.includes('/')) {
+      return input;
+    }
+    // Fallback
+    try {
+      const d = new Date(input);
+      return d.toLocaleDateString('pt-BR');
+    } catch {
+      return input;
+    }
+  };
+
+  const abrirConfirmacaoFatura = (fatura: FaturaPendente) => {
+    setFaturaParaConfirmar(fatura);
+    setValorFatura(fatura.valor_previsto ? fatura.valor_previsto.toString() : '');
+    setConfirmDialogOpen(true);
+  };
+
+  const confirmarFatura = async () => {
+    if (!faturaParaConfirmar) return;
+    const valor = parseFloat(valorFatura);
+    if (!valor || valor <= 0) {
+      alert('Informe um valor válido para a fatura.');
+      return;
+    }
+    try {
+      await axios.post(`/cartoes/faturas/${faturaParaConfirmar.id}/confirmar`, { valor_real: valor });
+      setConfirmDialogOpen(false);
+      setFaturaParaConfirmar(null);
+      // Recarregar dados essenciais
+      const [resumoRes, faturasRes] = await Promise.all([
+        axios.get('/relatorios/resumo', !mostrarTodos ? { params: { mes: mesAno.month() + 1, ano: mesAno.year() } } : {}),
+        axios.get('/cartoes/faturas/pendentes'),
+      ]);
+      setResumo(resumoRes.data);
+      setFaturasPendentes(faturasRes.data || []);
+    } catch (error: any) {
+      console.error('Erro ao confirmar fatura:', error);
+      alert(error.response?.data?.detail || 'Erro ao confirmar fatura');
+    }
   };
 
   const cardData = [
@@ -125,24 +225,95 @@ const Dashboard: React.FC = () => {
       <Typography variant="h4" gutterBottom>
         Dashboard
       </Typography>
+
+      {/* Alertas de Faturas Pendentes */}
+      {faturasPendentes.length > 0 && (
+        <Paper sx={{ p: 3, mb: 3, borderRadius: 2, border: '1px solid #ff980040' }}>
+          <Typography variant="h6" gutterBottom color="warning.main">
+            Faturas fechadas aguardando confirmação
+          </Typography>
+          {faturasPendentes.map((f) => (
+            <Box key={f.id} display="flex" alignItems="center" justifyContent="space-between" py={1}>
+              <Box>
+                <Typography variant="body1">
+                  Cartão {f.cartao_nome || `#${f.cartao_id}`} • Vencimento {formatDateBr(f.data_vencimento)}
+                </Typography>
+                <Typography variant="body2" color="text.secondary">
+                  Período: {formatDateBr(f.periodo_inicio)} — {formatDateBr(f.periodo_fim)} · Previsto: {formatCurrency(f.valor_previsto || 0)}
+                </Typography>
+              </Box>
+              <Button variant="contained" color="warning" onClick={() => abrirConfirmacaoFatura(f)}>
+                Confirmar Valor
+              </Button>
+            </Box>
+          ))}
+        </Paper>
+      )}
+
+      {/* Alertas de Contas que Vencem Hoje */}
+      {contasVencemHoje.length > 0 && (
+        <Paper sx={{ p: 3, mb: 3, borderRadius: 2, border: '1px solid #1976d240' }}>
+          <Typography variant="h6" gutterBottom color="primary.main">
+            Contas que vencem hoje
+          </Typography>
+          {contasVencemHoje.map((c) => (
+            <Box key={c.id} display="flex" alignItems="center" justifyContent="space-between" py={1}>
+              <Box>
+                <Typography variant="body1">
+                  {c.descricao} • {new Date(c.data_vencimento).toLocaleDateString('pt-BR')} • {formatCurrency(c.valor)}
+                </Typography>
+                <Typography variant="body2" color="text.secondary">
+                  Categoria: {c.categoria?.nome || '-'}{c.cartao?.nome ? ` • Cartão: ${c.cartao?.nome}` : ''}
+                </Typography>
+              </Box>
+              <Button variant="contained" onClick={() => window.location.href = '/contas'}>
+                Ver Contas
+              </Button>
+            </Box>
+          ))}
+        </Paper>
+      )}
       
-      {/* Filtro de Mês/Ano */}
-      <Box display="flex" alignItems="center" mb={3} gap={2}>
-        <Typography variant="h6">Período:</Typography>
-        <DatePicker
-          label="Mês/Ano"
-          value={mesAno}
-          onChange={(newValue) => setMesAno(newValue || dayjs())}
-          views={['year', 'month']}
-          format="MM/YYYY"
-          slotProps={{
-            textField: {
-              size: 'small',
-              sx: { minWidth: 150 }
+      {/* Filtros */}
+      <Paper sx={{ p: 3, mb: 3, borderRadius: 2 }}>
+        <Box display="flex" alignItems="center" gap={3} flexWrap="wrap">
+          <Typography variant="h6">Filtros:</Typography>
+          
+          <FormControlLabel
+            control={
+              <Checkbox
+                checked={mostrarTodos}
+                onChange={(e) => setMostrarTodos(e.target.checked)}
+                color="primary"
+              />
             }
-          }}
-        />
-      </Box>
+            label="Mostrar resumo geral (sem filtro de período)"
+          />
+          
+          {!mostrarTodos && (
+            <DatePicker
+              label="Período"
+              value={mesAno}
+              onChange={(newValue) => setMesAno(newValue || dayjs())}
+              views={['year', 'month']}
+              format="MM/YYYY"
+              slotProps={{
+                textField: {
+                  size: 'small',
+                  sx: { minWidth: 150 }
+                }
+              }}
+            />
+          )}
+          
+          <Typography variant="body2" color="text.secondary" sx={{ ml: 'auto' }}>
+            {mostrarTodos 
+              ? 'Resumo de todo o período' 
+              : `Período: ${mesAno.format('MM/YYYY')}`
+            }
+          </Typography>
+        </Box>
+      </Paper>
 
       {/* Gráfico de Evolução dos Gastos */}
       <Paper sx={{ p: 3, mb: 3 }}>
@@ -298,6 +469,35 @@ const Dashboard: React.FC = () => {
           </Paper>
         </Grid>
       </Grid>
+
+      {/* Diálogo de Confirmação de Fatura */}
+      <Dialog open={confirmDialogOpen} onClose={() => setConfirmDialogOpen(false)} maxWidth="sm" fullWidth>
+        <DialogTitle>Confirmar valor da fatura</DialogTitle>
+        <DialogContent>
+          {faturaParaConfirmar && (
+            <Box sx={{ pt: 1 }}>
+              <Typography variant="body2" color="text.secondary">
+                Vencimento: {new Date(faturaParaConfirmar.data_vencimento).toLocaleDateString('pt-BR')}
+              </Typography>
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+                Valor previsto: {formatCurrency(faturaParaConfirmar.valor_previsto || 0)}
+              </Typography>
+              <TextField
+                fullWidth
+                label="Valor real da fatura"
+                type="number"
+                value={valorFatura}
+                onChange={(e) => setValorFatura(e.target.value)}
+                inputProps={{ step: '0.01', min: '0' }}
+              />
+            </Box>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setConfirmDialogOpen(false)}>Cancelar</Button>
+          <Button onClick={confirmarFatura} variant="contained" color="warning">Confirmar</Button>
+        </DialogActions>
+      </Dialog>
     </>
   );
 };

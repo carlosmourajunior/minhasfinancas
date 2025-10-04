@@ -67,6 +67,7 @@ const SidebarLayout: React.FC<SidebarLayoutProps> = ({ children }) => {
     { label: 'Contas', path: '/contas', icon: <ReceiptIcon /> },
     { label: 'Categorias', path: '/categorias', icon: <CategoryIcon /> },
     { label: 'Relatórios', path: '/relatorios', icon: <AssessmentIcon /> },
+    { label: 'Cartões', path: '/cartoes', icon: <ReceiptIcon /> },
   ];
 
   const handleNavigation = (path: string) => {
